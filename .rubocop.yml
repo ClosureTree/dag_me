@@ -1,0 +1,26 @@
+plugins:
+  - rubocop-minitest
+  - rubocop-rake
+
+AllCops:
+  TargetRubyVersion: 3.4
+  NewCops: enable
+  SuggestExtensions: false
+
+# SQL generation and graph algorithms read better whole.
+Metrics:
+  Enabled: false
+
+Style/Documentation:
+  Enabled: false
+
+Layout/LineLength:
+  Max: 120
+
+Minitest/MultipleAssertions:
+  Enabled: false
+
+# ActiveSupport::Concern's class_methods block opens a fresh scope.
+Lint/UselessAccessModifier:
+  ContextCreatingMethods:
+    - class_methods

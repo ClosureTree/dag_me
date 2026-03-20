@@ -1,0 +1,3 @@
+test:
+  url: <%= ENV.fetch('DATABASE_URL_PG', 'postgresql://dag_me:dag_me@127.0.0.1:5438/dag_me_test') %>
+  pool: 10

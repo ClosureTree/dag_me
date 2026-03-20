@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:18
+    ports:
+      - 5438:5432
+    environment:
+      POSTGRES_USER: dag_me
+      POSTGRES_PASSWORD: dag_me
+      POSTGRES_DB: dag_me_test
+    healthcheck:
+      test: [CMD, pg_isready, -U, dag_me]
+      interval: 2s
+      timeout: 2s
+      retries: 15

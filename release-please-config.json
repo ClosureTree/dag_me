@@ -1,0 +1,9 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "ruby",
+      "package-name": "dag_me",
+      "version-file": "lib/dag_me/version.rb"
+    }
+  }
+}

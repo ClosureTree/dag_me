@@ -1,0 +1,10 @@
+*.gem
+.DS_Store
+.env
+Gemfile.lock
+coverage/
+log/
+pkg/
+tmp/
+test/fixtures/
+test/dummy/tmp/
