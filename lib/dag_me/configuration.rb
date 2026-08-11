@@ -4,7 +4,7 @@ module DagMe
   class Configuration
     MAINTAIN_MODES = %i[postgresql_closure recursive_cte].freeze
 
-    attr_reader :model, :name, :maintain, :prefix, :edge_table, :paths_table, :scope_columns
+    attr_reader :model, :name, :maintain, :prefix, :schema, :edge_table, :paths_table, :scope_columns
 
     def initialize(model:, name: nil, maintain: :postgresql_closure, scope: nil, edge_table: nil, paths_table: nil)
       unless MAINTAIN_MODES.include?(maintain)
@@ -15,9 +15,13 @@ module DagMe
       @name = name&.to_sym
       @maintain = maintain
       @scope_columns = Array(scope).map(&:to_sym).freeze
-      @prefix = [model.table_name.singularize, @name, 'dag'].compact.join('_')
-      @edge_table = edge_table || "#{prefix}_edges"
-      @paths_table = paths_table || "#{prefix}_paths"
+      # Schema-qualified node tables ("ai.skills") keep the prefix a plain
+      # identifier - trigger and temp-table names cannot carry a schema - and
+      # place generated tables and functions in the node table's schema.
+      @schema, base_table = split_schema(model.table_name)
+      @prefix = [base_table.singularize, @name, 'dag'].compact.join('_')
+      @edge_table = edge_table || qualify("#{prefix}_edges")
+      @paths_table = paths_table || qualify("#{prefix}_paths")
       # Ivar peek keeps class load DB-free; composite keys must be declared
       # before the macro. Array === because AR seeds a BasicObject sentinel.
       @composite_pk = model.instance_variable_defined?(:@primary_key) &&
@@ -26,6 +30,22 @@ module DagMe
 
     def closure?
       maintain == :postgresql_closure
+    end
+
+    # "skill_dag_edges" -> "ai.skill_dag_edges" when the node table lives in a
+    # named schema; identity otherwise.
+    def qualify(identifier)
+      schema ? "#{schema}.#{identifier}" : identifier
+    end
+
+    # Schema-qualified reference for a generated function ("ai.skill_dag_lock").
+    def function_ref(suffix)
+      qualify("#{prefix}_#{suffix}")
+    end
+
+    # Trigger names are plain identifiers; placement comes from ON <table>.
+    def trigger_name(suffix)
+      "#{prefix}_#{suffix}"
     end
 
     # The unnamed dag from a bare `dag_me` call. Named dags come from
@@ -116,6 +136,12 @@ module DagMe
     end
 
     private
+
+    def split_schema(table_name)
+      return table_name.split('.', 2) if table_name.include?('.')
+
+      [nil, table_name]
+    end
 
     def role_columns(role)
       return ["#{role}_id"].freeze unless composite_pk?

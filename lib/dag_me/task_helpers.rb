@@ -76,7 +76,7 @@ module DagMe
         JOIN pg_class c ON c.oid = t.tgrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE NOT t.tgisinternal
-          AND n.nspname = ANY (current_schemas(false))
+          AND #{namespace_filter(conn, config)}
           AND t.tgname LIKE #{conn.quote("#{config.prefix}\\_%")}
       SQL
       (expected - installed).map { |name| bad("trigger #{name} missing") }
@@ -96,11 +96,19 @@ module DagMe
       installed = conn.select_values(<<~SQL)
         SELECT p.proname FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = ANY (current_schemas(false))
+        WHERE #{namespace_filter(conn, config)}
           AND p.proname LIKE #{conn.quote("#{config.prefix}\\_%")}
       SQL
       (expected - installed).map { |name| bad("function #{name} missing") }
                             .presence || [ok("functions (#{expected.length})")]
+    end
+
+    # Objects for schema-qualified node tables live in that schema regardless
+    # of search_path; unqualified ones resolve through it.
+    def namespace_filter(conn, config)
+      return "n.nspname = #{conn.quote(config.schema)}" if config.schema
+
+      'n.nspname = ANY (current_schemas(false))'
     end
 
     def closure_check(model, config)

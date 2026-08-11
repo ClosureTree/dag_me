@@ -77,22 +77,21 @@ module DagMe
     end
 
     def uninstall_sql
-      p = config.prefix
       [
-        "DROP TRIGGER IF EXISTS #{p}_node_insert ON #{config.node_table};",
-        "DROP TRIGGER IF EXISTS #{p}_node_update ON #{config.node_table};",
-        "DROP TRIGGER IF EXISTS #{p}_node_delete ON #{config.node_table};",
+        "DROP TRIGGER IF EXISTS #{config.trigger_name('node_insert')} ON #{config.node_table};",
+        "DROP TRIGGER IF EXISTS #{config.trigger_name('node_update')} ON #{config.node_table};",
+        "DROP TRIGGER IF EXISTS #{config.trigger_name('node_delete')} ON #{config.node_table};",
         "DROP TABLE IF EXISTS #{config.paths_table};",
         "DROP TABLE IF EXISTS #{config.edge_table};",
-        "DROP FUNCTION IF EXISTS #{p}_lock(text);",
-        "DROP FUNCTION IF EXISTS #{p}_edge_insert_check();",
-        "DROP FUNCTION IF EXISTS #{p}_edge_insert_apply();",
-        "DROP FUNCTION IF EXISTS #{p}_edge_delete_apply();",
-        "DROP FUNCTION IF EXISTS #{p}_node_insert();",
-        "DROP FUNCTION IF EXISTS #{p}_node_update();",
-        "DROP FUNCTION IF EXISTS #{p}_node_delete();",
-        "DROP FUNCTION IF EXISTS #{p}_rebuild_paths();",
-        "DROP FUNCTION IF EXISTS #{p}_validate_paths();"
+        "DROP FUNCTION IF EXISTS #{config.function_ref('lock')}(text);",
+        "DROP FUNCTION IF EXISTS #{config.function_ref('edge_insert_check')}();",
+        "DROP FUNCTION IF EXISTS #{config.function_ref('edge_insert_apply')}();",
+        "DROP FUNCTION IF EXISTS #{config.function_ref('edge_delete_apply')}();",
+        "DROP FUNCTION IF EXISTS #{config.function_ref('node_insert')}();",
+        "DROP FUNCTION IF EXISTS #{config.function_ref('node_update')}();",
+        "DROP FUNCTION IF EXISTS #{config.function_ref('node_delete')}();",
+        "DROP FUNCTION IF EXISTS #{config.function_ref('rebuild_paths')}();",
+        "DROP FUNCTION IF EXISTS #{config.function_ref('validate_paths')}();"
       ]
     end
 
@@ -211,7 +210,7 @@ module DagMe
     # snapshot after the lock wait, so anything above READ COMMITTED is refused.
     def lock_function_sql
       <<~SQL
-        CREATE OR REPLACE FUNCTION #{config.prefix}_lock(scope_key text) RETURNS void
+        CREATE OR REPLACE FUNCTION #{config.function_ref('lock')}(scope_key text) RETURNS void
         LANGUAGE plpgsql AS $$
         BEGIN
           IF current_setting('transaction_isolation') NOT IN ('read committed', 'read uncommitted') THEN
@@ -229,8 +228,7 @@ module DagMe
     # reject cross-scope edges, stamp NEW, and lock the scope. Unscoped graphs
     # just lock the single '' key.
     def edge_check_preamble
-      p = config.prefix
-      return "  PERFORM #{p}_lock('');" unless scoped?
+      return "  PERFORM #{config.function_ref('lock')}('');" unless scoped?
 
       stamps = config.scope_columns.map { |c| "  NEW.#{c} := parent_row.#{c};" }.join("\n")
       # FOR SHARE pins both node rows so a concurrent scope UPDATE cannot race
@@ -243,7 +241,7 @@ module DagMe
               USING ERRCODE = '#{SQLSTATE_CROSS_SCOPE}';
           END IF;
         #{stamps}
-          PERFORM #{p}_lock(#{scope_key_expr('parent_row')});
+          PERFORM #{config.function_ref('lock')}(#{scope_key_expr('parent_row')});
       SQL
     end
 
@@ -279,7 +277,7 @@ module DagMe
 
     def closure_edge_insert_check_sql
       <<~SQL
-        CREATE OR REPLACE FUNCTION #{config.prefix}_edge_insert_check() RETURNS trigger
+        CREATE OR REPLACE FUNCTION #{config.function_ref('edge_insert_check')}() RETURNS trigger
         LANGUAGE plpgsql AS $$
         #{edge_check_declarations}
         BEGIN
@@ -300,7 +298,7 @@ module DagMe
     def edge_insert_apply_sql
       paths = config.paths_table
       <<~SQL
-        CREATE OR REPLACE FUNCTION #{config.prefix}_edge_insert_apply() RETURNS trigger
+        CREATE OR REPLACE FUNCTION #{config.function_ref('edge_insert_apply')}() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
           -- ancestors-incl-self of parent x descendants-incl-self of child
@@ -328,10 +326,10 @@ module DagMe
       y_cols = pk_cols.map { |c| "y_#{c}" }
       rect_defs = (col_defs(x_cols) + col_defs(y_cols)).map { |d| "    #{d}," }.join("\n")
       <<~SQL
-        CREATE OR REPLACE FUNCTION #{p}_edge_delete_apply() RETURNS trigger
+        CREATE OR REPLACE FUNCTION #{config.function_ref('edge_delete_apply')}() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
-          PERFORM #{p}_lock(#{scope_key_expr('OLD')});
+          PERFORM #{config.function_ref('lock')}(#{scope_key_expr('OLD')});
 
           -- The affected rectangle: every pair (x, y) with x reaching OLD's parent
           -- and OLD's child reaching y lost `removed` paths through this edge.
@@ -401,7 +399,7 @@ module DagMe
 
     def node_insert_function_sql
       <<~SQL
-        CREATE OR REPLACE FUNCTION #{config.prefix}_node_insert() RETURNS trigger
+        CREATE OR REPLACE FUNCTION #{config.function_ref('node_insert')}() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
           INSERT INTO #{config.paths_table} (#{list(anc_cols)}, #{list(desc_cols)}, min_depth, path_count#{scope_column_list})
@@ -414,10 +412,10 @@ module DagMe
 
     def node_delete_function_sql
       <<~SQL
-        CREATE OR REPLACE FUNCTION #{config.prefix}_node_delete() RETURNS trigger
+        CREATE OR REPLACE FUNCTION #{config.function_ref('node_delete')}() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
-          PERFORM #{config.prefix}_lock(#{scope_key_expr('OLD')});
+          PERFORM #{config.function_ref('lock')}(#{scope_key_expr('OLD')});
           -- Remove edges through their triggers so the closure shrinks
           -- incrementally instead of relying on FK-cascade ordering.
           DELETE FROM #{config.edge_table}
@@ -441,7 +439,7 @@ module DagMe
                   '-- edges only: nothing materialized to restamp'
                 end
       <<~SQL
-        CREATE OR REPLACE FUNCTION #{config.prefix}_node_update() RETURNS trigger
+        CREATE OR REPLACE FUNCTION #{config.function_ref('node_update')}() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
           IF #{scope_distinct_expr('NEW', 'OLD')} THEN
@@ -461,22 +459,23 @@ module DagMe
     end
 
     def closure_trigger_sql
-      p = config.prefix
       triggers = [
-        trigger_sql("#{p}_edge_insert_check", 'BEFORE INSERT', config.edge_table),
-        trigger_sql("#{p}_edge_insert_apply", 'AFTER INSERT', config.edge_table),
-        trigger_sql("#{p}_edge_delete_apply", 'AFTER DELETE', config.edge_table),
-        trigger_sql("#{p}_node_insert", 'AFTER INSERT', config.node_table),
-        trigger_sql("#{p}_node_delete", 'BEFORE DELETE', config.node_table)
+        trigger_sql('edge_insert_check', 'BEFORE INSERT', config.edge_table),
+        trigger_sql('edge_insert_apply', 'AFTER INSERT', config.edge_table),
+        trigger_sql('edge_delete_apply', 'AFTER DELETE', config.edge_table),
+        trigger_sql('node_insert', 'AFTER INSERT', config.node_table),
+        trigger_sql('node_delete', 'BEFORE DELETE', config.node_table)
       ]
-      triggers << trigger_sql("#{p}_node_update", 'BEFORE UPDATE', config.node_table) if scoped?
+      triggers << trigger_sql('node_update', 'BEFORE UPDATE', config.node_table) if scoped?
       triggers
     end
 
-    def trigger_sql(name, timing, table)
+    # Trigger names are plain identifiers; the executed function carries the
+    # schema qualification.
+    def trigger_sql(suffix, timing, table)
       <<~SQL
-        CREATE TRIGGER #{name} #{timing} ON #{table}
-          FOR EACH ROW EXECUTE FUNCTION #{name}();
+        CREATE TRIGGER #{config.trigger_name(suffix)} #{timing} ON #{table}
+          FOR EACH ROW EXECUTE FUNCTION #{config.function_ref(suffix)}();
       SQL
     end
 
@@ -504,7 +503,7 @@ module DagMe
       scope_join = scoped? ? "JOIN #{config.node_table} n ON #{eq(pk_cols, anc_cols, left: 'n', right: 'walk')}" : ''
       scope_group = config.scope_columns.map { |c| ", n.#{c}" }.join
       <<~SQL
-        CREATE OR REPLACE FUNCTION #{config.prefix}_rebuild_paths() RETURNS void
+        CREATE OR REPLACE FUNCTION #{config.function_ref('rebuild_paths')}() RETURNS void
         LANGUAGE plpgsql AS $$
         BEGIN
           LOCK TABLE #{config.node_table}, #{config.edge_table} IN SHARE ROW EXCLUSIVE MODE;
@@ -531,7 +530,7 @@ module DagMe
                 .map { |d| "  #{d}," }.join("\n")
       coalesced = (anc_cols + desc_cols).map { |c| "COALESCE(t.#{c}, s.#{c})" }.join(",\n                 ")
       <<~SQL
-        CREATE OR REPLACE FUNCTION #{config.prefix}_validate_paths()
+        CREATE OR REPLACE FUNCTION #{config.function_ref('validate_paths')}()
         RETURNS TABLE(
         #{returns}
           stored_min_depth integer,
@@ -571,7 +570,7 @@ module DagMe
 
     def cte_edge_insert_check_sql
       <<~SQL
-        CREATE OR REPLACE FUNCTION #{config.prefix}_edge_insert_check() RETURNS trigger
+        CREATE OR REPLACE FUNCTION #{config.function_ref('edge_insert_check')}() RETURNS trigger
         LANGUAGE plpgsql AS $$
         #{edge_check_declarations}
         BEGIN
@@ -593,9 +592,8 @@ module DagMe
     end
 
     def cte_trigger_sql
-      p = config.prefix
-      triggers = [trigger_sql("#{p}_edge_insert_check", 'BEFORE INSERT', config.edge_table)]
-      triggers << trigger_sql("#{p}_node_update", 'BEFORE UPDATE', config.node_table) if scoped?
+      triggers = [trigger_sql('edge_insert_check', 'BEFORE INSERT', config.edge_table)]
+      triggers << trigger_sql('node_update', 'BEFORE UPDATE', config.node_table) if scoped?
       triggers
     end
   end

@@ -15,6 +15,7 @@ module DagMeTestSchema
   # (test/dummy/db/migrate), exactly as a host app would run them.
   def reset!
     ActiveRecord::Base.connection.execute('DROP SCHEMA public CASCADE; CREATE SCHEMA public;')
+    ActiveRecord::Base.connection.execute('DROP SCHEMA IF EXISTS orbital CASCADE;')
     ActiveRecord::MigrationContext.new(Rails.application.paths['db/migrate'].expanded).migrate
   end
 end

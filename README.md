@@ -136,6 +136,20 @@ end
 `:recursive_cte` skips the closure table entirely - good for small graphs, high mutation
 rates, and as the truth oracle. Cycle rejection stays in-database either way.
 
+## Schema-qualified tables
+
+Node tables living in a named PostgreSQL schema work out of the box:
+
+```ruby
+class Station < ApplicationRecord
+  self.table_name = 'orbital.stations'
+  dag_me
+end
+```
+
+Generated tables (`orbital.station_dag_edges`, `orbital.station_dag_paths`) and
+functions land in the node table's schema; trigger names stay plain identifiers.
+
 ## Multi-tenancy
 
 ```ruby

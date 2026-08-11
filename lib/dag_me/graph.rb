@@ -51,7 +51,7 @@ module DagMe
       return self unless config.closure?
 
       model.connection_pool.with_connection do |conn|
-        conn.execute("SELECT #{conn.quote_table_name("#{config.prefix}_rebuild_paths")}();")
+        conn.execute("SELECT #{conn.quote_table_name(config.function_ref('rebuild_paths'))}();")
       end
       self
     end
@@ -62,7 +62,7 @@ module DagMe
       return [] unless config.closure?
 
       model.connection_pool.with_connection do |conn|
-        conn.select_all("SELECT * FROM #{conn.quote_table_name("#{config.prefix}_validate_paths")}();").to_a
+        conn.select_all("SELECT * FROM #{conn.quote_table_name(config.function_ref('validate_paths'))}();").to_a
       end
     end
 
