@@ -80,7 +80,7 @@ module DagMe
 
       # Nodes with no edge row in the given role (child -> roots, parent -> leaves).
       def dag_nodes_without(config, role)
-        edge = Arel::Table.new(config.edge_table)
+        edge = config.edge_class.arel_table
         conds = config.node_pk_columns.zip(config.public_send(role))
                       .map { |pk, edge_col| edge[edge_col].eq(arel_table[pk]) }.inject(:and)
         where.not(edge.project(1).where(conds).exists)

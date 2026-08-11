@@ -10,6 +10,15 @@ require 'dag_me/railtie' if defined?(Rails)
 module DagMe
   extend ActiveSupport::Autoload
 
+  # Rails main (8.2) made Arel::Table.new keyword-only.
+  KEYWORD_AREL_TABLE = Arel::Table.instance_method(:initialize).parameters.none? do |type, _name|
+    %i[req opt].include?(type)
+  end
+
+  def self.arel_table(name)
+    KEYWORD_AREL_TABLE ? Arel::Table.new(name: name) : Arel::Table.new(name)
+  end
+
   autoload :Configuration
   autoload :DDL
   autoload :Graph

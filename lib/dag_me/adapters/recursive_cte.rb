@@ -54,8 +54,8 @@ module DagMe
       # towards `to`, seeded by the condition the block builds on the edge
       # table. Returns the CTE table and its definition.
       def reach_cte(name, from:, to:)
-        edge = Arel::Table.new(config.edge_table)
-        cte = Arel::Table.new(name)
+        edge = config.edge_class.arel_table
+        cte = DagMe.arel_table(name)
         conn = model.connection
         base = edge.project(*to.zip(pk_columns).map { |c, pk| edge[c].as(conn.quote_column_name(pk)) })
                    .where(yield(edge))
