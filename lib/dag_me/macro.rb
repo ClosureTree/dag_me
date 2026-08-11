@@ -14,7 +14,7 @@ module DagMe
     #   relay.add_child(other, dag: :power)
     #   relay.comms_children
     #   Relay.dag(:power).rebuild!
-    def dag_me(name = nil, maintain: :postgresql_closure, scope: nil, edge_table: nil, paths_table: nil)
+    def dag_me(name = nil, maintain: :postgresql_closure, scope: nil, prefix: nil, edge_table: nil, paths_table: nil)
       key = name&.to_sym || :default
       unless include?(DagMe::Model)
         class_attribute :dag_configs, instance_writer: false, instance_predicate: false, default: {}.freeze
@@ -22,7 +22,7 @@ module DagMe
       end
       raise ArgumentError, "#{self.name}: dag #{key.inspect} is already defined" if dag_configs.key?(key)
 
-      config = Configuration.new(model: self, name: name&.to_sym, maintain:, scope:, edge_table:, paths_table:)
+      config = Configuration.new(model: self, name: name&.to_sym, maintain:, scope:, prefix:, edge_table:, paths_table:)
       self.dag_configs = dag_configs.merge(key => config).freeze
       DagMe::Model.attach(self, config)
       self

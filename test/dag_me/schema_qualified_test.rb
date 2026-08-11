@@ -113,3 +113,39 @@ class UnloggedTablesTest < Minitest::Test
     assert_includes sql, 'CREATE TABLE orbital.station_dag_edges'
   end
 end
+
+# Long node table names would push generated identifiers past PostgreSQL's
+# 63-byte limit; dag_me prefix: overrides the derived name.
+class PrefixOverrideTest < Minitest::Test
+  def test_prefix_override_drives_all_generated_names
+    model = Class.new(ActiveRecord::Base) { self.table_name = 'missions' }
+    config = DagMe::Configuration.new(model: model, prefix: 'bom_dag')
+
+    assert_equal 'bom_dag', config.prefix
+    assert_equal 'bom_dag_edges', config.edge_table
+    assert_equal 'bom_dag_paths', config.paths_table
+    assert_equal 'bom_dag_lock', config.function_ref('lock')
+  end
+
+  def test_prefix_override_respects_schema
+    model = Class.new(ActiveRecord::Base) { self.table_name = 'orbital.stations' }
+    config = DagMe::Configuration.new(model: model, prefix: 'stn_dag')
+
+    assert_equal 'orbital.stn_dag_edges', config.edge_table
+    assert_equal 'orbital.stn_dag_lock', config.function_ref('lock')
+    assert_equal 'stn_dag_node_insert', config.trigger_name('node_insert')
+  end
+
+  def test_overlong_prefix_is_rejected
+    model = Class.new(ActiveRecord::Base) { self.table_name = 'a' * 60 }
+
+    error = assert_raises(ArgumentError) { DagMe::Configuration.new(model: model) }
+    assert_match(/63-byte limit/, error.message)
+  end
+
+  def test_invalid_identifier_prefix_is_rejected
+    model = Class.new(ActiveRecord::Base) { self.table_name = 'missions' }
+
+    assert_raises(ArgumentError) { DagMe::Configuration.new(model: model, prefix: 'bad-name') }
+  end
+end

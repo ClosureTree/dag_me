@@ -6,7 +6,8 @@ module DagMe
 
     attr_reader :model, :name, :maintain, :prefix, :schema, :edge_table, :paths_table, :scope_columns
 
-    def initialize(model:, name: nil, maintain: :postgresql_closure, scope: nil, edge_table: nil, paths_table: nil)
+    def initialize(model:, name: nil, maintain: :postgresql_closure, scope: nil, prefix: nil,
+                   edge_table: nil, paths_table: nil)
       unless MAINTAIN_MODES.include?(maintain)
         raise ArgumentError, "maintain must be one of #{MAINTAIN_MODES.inspect}, got #{maintain.inspect}"
       end
@@ -19,9 +20,12 @@ module DagMe
       # identifier - trigger and temp-table names cannot carry a schema - and
       # place generated tables and functions in the node table's schema.
       @schema, base_table = split_schema(model.table_name)
-      @prefix = [base_table.singularize, @name, 'dag'].compact.join('_')
-      @edge_table = edge_table || qualify("#{prefix}_edges")
-      @paths_table = paths_table || qualify("#{prefix}_paths")
+      # A custom prefix keeps generated identifiers under PostgreSQL's 63-byte
+      # limit when the derived one (long table names) would silently truncate.
+      @prefix = prefix&.to_s || [base_table.singularize, @name, 'dag'].compact.join('_')
+      validate_prefix!
+      @edge_table = edge_table || qualify("#{@prefix}_edges")
+      @paths_table = paths_table || qualify("#{@prefix}_paths")
       # Ivar peek keeps class load DB-free; composite keys must be declared
       # before the macro. Array === because AR seeds a BasicObject sentinel.
       @composite_pk = model.instance_variable_defined?(:@primary_key) &&
@@ -136,6 +140,21 @@ module DagMe
     end
 
     private
+
+    # The longest generated suffix is "_edge_insert_check" (18 bytes); reject
+    # prefixes whose identifiers PostgreSQL would silently truncate at 63.
+    def validate_prefix!
+      unless /\A[a-z_][a-z0-9_]*\z/.match?(@prefix)
+        raise ArgumentError, "prefix must be a lowercase SQL identifier, got #{@prefix.inspect}"
+      end
+
+      max = 63 - '_edge_insert_check'.length
+      return if @prefix.length <= max
+
+      raise ArgumentError,
+            "prefix #{@prefix.inspect} is #{@prefix.length} bytes; identifiers would exceed " \
+            "PostgreSQL's 63-byte limit (max prefix: #{max}). Pass dag_me prefix: '...' with a shorter name."
+    end
 
     def split_schema(table_name)
       return table_name.split('.', 2) if table_name.include?('.')

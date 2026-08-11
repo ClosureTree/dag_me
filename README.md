@@ -150,6 +150,15 @@ end
 Generated tables (`orbital.station_dag_edges`, `orbital.station_dag_paths`) and
 functions land in the node table's schema; trigger names stay plain identifiers.
 
+Long table names would push generated identifiers past PostgreSQL's 63-byte
+limit; pass a custom prefix instead of letting it truncate:
+
+```ruby
+class MaterialTracking::ProductBillOfMaterial < ApplicationRecord
+  dag_me prefix: 'bom_dag'   # bom_dag_edges, bom_dag_paths, bom_dag_lock, ...
+end
+```
+
 ## Multi-tenancy
 
 ```ruby
