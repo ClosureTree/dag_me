@@ -89,3 +89,27 @@ class SchemaQualifiedTest < Minitest::Test
     assert_match(/orbital\.station_dag_edges/, report.string)
   end
 end
+
+# Rails test environments set PostgreSQLAdapter.create_unlogged_tables for
+# speed; generated tables must follow suit or their FKs to the (unlogged)
+# node table are rejected by PostgreSQL.
+class UnloggedTablesTest < Minitest::Test
+  def test_install_sql_uses_unlogged_tables_when_adapter_flag_is_set
+    adapter = ActiveRecord::ConnectionAdapters::PostgreSQLAdapter
+    original = adapter.create_unlogged_tables
+    adapter.create_unlogged_tables = true
+
+    sql = DagMe::DDL.new(Station.dag_config).install_sql.join("\n")
+
+    assert_includes sql, 'CREATE UNLOGGED TABLE orbital.station_dag_edges'
+    assert_includes sql, 'CREATE UNLOGGED TABLE orbital.station_dag_paths'
+  ensure
+    adapter.create_unlogged_tables = original
+  end
+
+  def test_install_sql_uses_logged_tables_by_default
+    sql = DagMe::DDL.new(Station.dag_config).install_sql.join("\n")
+
+    assert_includes sql, 'CREATE TABLE orbital.station_dag_edges'
+  end
+end
