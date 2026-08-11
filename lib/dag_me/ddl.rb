@@ -76,6 +76,16 @@ module DagMe
       statements
     end
 
+    # Graph#backfill_self_rows! reuses this to repair nodes inserted with
+    # triggers disabled (e.g. Rails fixture loading).
+    def backfill_self_rows_sql
+      <<~SQL
+        INSERT INTO #{config.paths_table} (#{list(anc_cols)}, #{list(desc_cols)}, min_depth, path_count#{scope_column_list})
+        SELECT #{list(pk_cols)}, #{list(pk_cols)}, 0, 1#{scope_column_list} FROM #{config.node_table}
+        ON CONFLICT DO NOTHING;
+      SQL
+    end
+
     def uninstall_sql
       [
         "DROP TRIGGER IF EXISTS #{config.trigger_name('node_insert')} ON #{config.node_table};",
@@ -486,14 +496,6 @@ module DagMe
       <<~SQL
         CREATE TRIGGER #{config.trigger_name(suffix)} #{timing} ON #{table}
           FOR EACH ROW EXECUTE FUNCTION #{config.function_ref(suffix)}();
-      SQL
-    end
-
-    def backfill_self_rows_sql
-      <<~SQL
-        INSERT INTO #{config.paths_table} (#{list(anc_cols)}, #{list(desc_cols)}, min_depth, path_count#{scope_column_list})
-        SELECT #{list(pk_cols)}, #{list(pk_cols)}, 0, 1#{scope_column_list} FROM #{config.node_table}
-        ON CONFLICT DO NOTHING;
       SQL
     end
 

@@ -56,6 +56,18 @@ module DagMe
       self
     end
 
+    # Restores missing self-rows for nodes inserted with triggers disabled -
+    # Rails fixture loading wraps inserts in disable_referential_integrity,
+    # which skips the node_insert trigger. Idempotent; meant for test setups.
+    def backfill_self_rows!
+      return self unless config.closure?
+
+      model.connection_pool.with_connection do |conn|
+        conn.execute(DDL.new(config).backfill_self_rows_sql)
+      end
+      self
+    end
+
     # Rows where the stored closure disagrees with the recursive-CTE truth.
     # Empty means healthy.
     def validate

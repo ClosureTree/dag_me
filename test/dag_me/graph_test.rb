@@ -41,3 +41,34 @@ class GraphTest < Minitest::Test
     assert Maneuver.dag.rebuild!
   end
 end
+
+# Rails fixture loading inserts nodes under disable_referential_integrity,
+# skipping the self-row trigger; backfill_self_rows! repairs that.
+class BackfillSelfRowsTest < Minitest::Test
+  include DagTestHelpers
+
+  def setup
+    wipe!(Mission)
+  end
+
+  def test_backfill_restores_missing_self_rows
+    mission = Mission.create!(name: 'a')
+    Mission::DagPath.where(ancestor_id: mission.id, descendant_id: mission.id).delete_all
+
+    assert_empty mission.self_and_descendants
+
+    Mission.dag.backfill_self_rows!
+
+    assert_equal [mission], mission.self_and_descendants.to_a
+    assert_predicate Mission.dag, :valid?
+  end
+
+  def test_backfill_is_idempotent
+    Mission.create!(name: 'a')
+
+    Mission.dag.backfill_self_rows!
+    Mission.dag.backfill_self_rows!
+
+    assert_predicate Mission.dag, :valid?
+  end
+end
