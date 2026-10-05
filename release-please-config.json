@@ -3,7 +3,12 @@
     ".": {
       "release-type": "ruby",
       "package-name": "dag_me",
-      "version-file": "lib/dag_me/version.rb"
+      "version-file": "lib/dag_me/version.rb",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true
     }
-  }
+  },
+  "bootstrap-sha": "24bd608be88e2a6e93b7f13464fa5a4e7fece962"
 }
