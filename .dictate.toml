@@ -25,20 +25,14 @@ extensions = ["md", "mdx"]
 [decree.ruby]
 # Ruby-specific structural enforcement
 max_line_length = 120
-# SQL generation and graph algorithms read better whole; max_lines cannot be
-# disabled (unset falls back to 300), so set it out of reach.
-max_lines = 1000
+# SQL generation and graph algorithms read better whole.
+max_lines = 0
 ignore_comments = true
 ignore_blank_lines = true
+# Generated SQL lives in heredocs; only the Ruby around it is held to 120.
+ignore_heredocs = true
 method_visibility_order = ["public", "protected", "private"]
-# dictator <= 0.24.0 reads `#{...}` at the start of a heredoc line as a comment.
-# Once the pinned release has heredoc support, re-enable this and replace the
-# line-too-long ignore below with `ignore_heredocs = true`.
-comment_spacing = false
-
-# Heredoc SQL; per-line exemption isn't supported, only per-file.
-[decree.ruby.ignore.line-too-long]
-filenames = ["ddl.rb", "tooling_test.rb"]
+comment_spacing = true
 
 # [decree.typescript]
 # # TypeScript/JavaScript structural enforcement

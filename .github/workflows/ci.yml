@@ -30,9 +30,8 @@ jobs:
         with:
           ruby-version: '3.4'
           bundler-cache: true
-      - name: Install dictator
-        run: |
-          curl -fsSL https://github.com/seuros/dictator/releases/download/dictator-v0.24.0/dictator-v0.24.0-x86_64-unknown-linux-gnu.tar.gz \
-            | sudo tar -xz -C /usr/local/bin dictator
+      - uses: seuros/dictator-setup@v1
+        with:
+          version: 0.25.0
       - run: dictator lint lib test
       - run: bundle exec rake test
