@@ -29,7 +29,7 @@ module DagMe
                    "#{klass} should be scoped by #{Array(scope).join(', ')}"
     end
 
-    # Asserts the stored closure agrees with the recursive-CTE truth.
+    # Asserts the stored closure agrees with the closure recomputed from the edges.
     def assert_dag_valid(klass, dag: nil)
       discrepancies = klass.dag(dag).validate
 

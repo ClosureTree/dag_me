@@ -1,0 +1,9 @@
+# frozen_string_literal: true
+
+class RefreshDagMeR<%= revision %>For<%= class_name.pluralize %> < ActiveRecord::Migration<%= migration_version %>
+  # Replaces dag_me's function bodies with revision <%= revision %>.
+  # Tables, triggers, and rows are left alone.
+  def up
+    DagMe::DDL.refresh!(<%= class_name %>)
+  end
+end

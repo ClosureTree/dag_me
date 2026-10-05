@@ -120,6 +120,20 @@ class BasicTest < Minitest::Test
     assert_empty Mission.dag.validate
   end
 
+  # The shortcut a -> e carries every shortest path from above it; dropping
+  # it has to push the longer distance up through x and y, but not z, which
+  # has its own short route through q.
+  def test_remove_shortcut_propagates_min_depth_upward
+    nodes = build_dag(Mission, %w[z>y y>x x>a a>b b>c c>d d>e a>e z>q q>e])
+
+    assert_equal [1, 2, 3, 2], distances_to(nodes, 'e', from: %w[a x y z])
+
+    nodes['a'].remove_child(nodes['e'])
+
+    assert_equal [4, 5, 6, 2], distances_to(nodes, 'e', from: %w[a x y z])
+    assert_empty Mission.dag.validate
+  end
+
   def test_node_deletion_cleans_graph
     nodes = build_dag(Mission, %w[a>b b>c a>d])
     nodes['b'].destroy!
@@ -143,5 +157,13 @@ class BasicTest < Minitest::Test
 
     assert_equal before, after
     assert_empty Mission.dag.validate
+  end
+
+  private
+
+  def distances_to(nodes, target, from:)
+    from.map do |name|
+      Mission::DagPath.find_by!(ancestor_id: nodes[name].id, descendant_id: nodes[target].id).min_depth
+    end
   end
 end

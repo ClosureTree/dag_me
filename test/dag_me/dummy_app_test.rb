@@ -3,6 +3,7 @@
 require 'test_helper'
 require 'rails/generators'
 require 'generators/dag_me/migration_generator'
+require 'generators/dag_me/refresh_generator'
 require 'rake'
 require 'stringio'
 require 'tmpdir'
@@ -30,6 +31,18 @@ class DummyAppTest < Minitest::Test
       assert_match(/class InstallDagMeForBeacons < ActiveRecord::Migration\[\d+\.\d+\]/, content)
       assert_includes content, 'DagMe::DDL.install!(Beacon)'
       assert_includes content, 'DagMe::DDL.uninstall!(Beacon)'
+    end
+  end
+
+  def test_refresh_generator_creates_revision_named_migration
+    Dir.mktmpdir do |dir|
+      quietly { DagMe::Generators::RefreshGenerator.start(['Beacon'], destination_root: dir) }
+      revision = DagMe::DDL::REVISION
+      file = Dir[File.join(dir, "db/migrate/*_refresh_dag_me_r#{revision}_for_beacons.rb")].sole
+      content = File.read(file)
+
+      assert_match(/class RefreshDagMeR#{revision}ForBeacons < ActiveRecord::Migration\[\d+\.\d+\]/, content)
+      assert_includes content, 'DagMe::DDL.refresh!(Beacon)'
     end
   end
 

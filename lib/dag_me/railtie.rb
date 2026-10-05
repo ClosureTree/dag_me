@@ -6,6 +6,7 @@ module DagMe
   class Railtie < Rails::Railtie # :nodoc:
     generators do
       require_relative '../generators/dag_me/migration_generator'
+      require_relative '../generators/dag_me/refresh_generator'
     end
 
     rake_tasks do

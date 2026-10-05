@@ -65,4 +65,52 @@ module DagTestHelpers
   def wipe!(model)
     model.delete_all
   end
+
+  # The closure by brute force: enumerate every path with UNION ALL and
+  # count. Exponential in the number of diamonds, so small graphs only, but
+  # independent of both the triggers and the layered recomputation.
+  # Single-column keys. Rows are [ancestor, descendant, min_depth, path_count].
+  def brute_force_closure(model)
+    edges = model.dag.config.edge_table
+    model.connection.select_rows(<<~SQL).map { |row| row.map(&:to_i) }.sort
+      WITH RECURSIVE walk(ancestor_id, descendant_id, depth) AS (
+        SELECT parent_id, child_id, 1 FROM #{edges}
+        UNION ALL
+        SELECT w.ancestor_id, e.child_id, w.depth + 1
+        FROM walk w JOIN #{edges} e ON e.parent_id = w.descendant_id
+      )
+      SELECT ancestor_id, descendant_id, MIN(depth), COUNT(*) FROM walk GROUP BY ancestor_id, descendant_id
+      UNION ALL
+      SELECT id, id, 0, 1 FROM #{model.table_name}
+    SQL
+  end
+
+  def stored_closure(model)
+    model.dag.config.paths_class
+         .pluck(:ancestor_id, :descendant_id, :min_depth, :path_count)
+         .map { |row| row.map(&:to_i) }.sort
+  end
+
+  # Every closure row as a sorted list of attribute hashes - works for any
+  # key shape and carries scope columns.
+  def closure_rows(model)
+    model.dag.config.paths_class.all.map(&:attributes).sort_by(&:inspect)
+  end
+
+  # `count` diamonds in a row (a -> b, a -> c, b -> d, c -> d, d is the
+  # next a). Returns [first, last]; 2**count paths connect them.
+  def diamond_chain(model, count)
+    first = joint = model.create!(name: 'j0')
+    count.times do |i|
+      left = model.create!(name: "l#{i}")
+      right = model.create!(name: "r#{i}")
+      nxt = model.create!(name: "j#{i + 1}")
+      joint.add_child(left)
+      joint.add_child(right)
+      left.add_child(nxt)
+      right.add_child(nxt)
+      joint = nxt
+    end
+    [first, joint]
+  end
 end

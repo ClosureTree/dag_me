@@ -16,7 +16,7 @@ module DagMe
   class IsolationError < Error; end
 
   # Raised by Graph#validate! when the stored closure disagrees with the
-  # recursive-CTE truth. Carries the offending rows.
+  # closure recomputed from the edges. Carries the offending rows.
   class CorruptionError < Error
     attr_reader :discrepancies
 

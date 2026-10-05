@@ -51,7 +51,9 @@ module DagMe
       return self unless config.closure?
 
       model.connection_pool.with_connection do |conn|
-        conn.execute("SELECT #{conn.quote_table_name(config.function_ref('rebuild_paths'))}();")
+        DagMe.translate_errors do
+          conn.execute("SELECT #{conn.quote_table_name(config.function_ref('rebuild_paths'))}();")
+        end
       end
       self
     end
@@ -68,13 +70,19 @@ module DagMe
       self
     end
 
-    # Rows where the stored closure disagrees with the recursive-CTE truth.
-    # Empty means healthy.
+    # Rows where the stored closure disagrees with the closure recomputed
+    # from the edges. Empty means healthy. Raises CycleError when the edges
+    # themselves contain a cycle (possible only with triggers disabled).
+    # Needs a writable connection: the recomputation uses temp tables.
     def validate
       return [] unless config.closure?
 
       model.connection_pool.with_connection do |conn|
-        conn.select_all("SELECT * FROM #{conn.quote_table_name(config.function_ref('validate_paths'))}();").to_a
+        DagMe.translate_errors do
+          with_stable_snapshot(conn) do
+            conn.select_all("SELECT * FROM #{conn.quote_table_name(config.function_ref('validate_paths'))}();").to_a
+          end
+        end
       end
     end
 
@@ -91,6 +99,17 @@ module DagMe
       end
 
       self
+    end
+
+    private
+
+    # validate_paths() reads the graph across several statements. Its own
+    # REPEATABLE READ transaction gives them one snapshot without blocking
+    # writers; inside a caller's transaction the function locks instead.
+    def with_stable_snapshot(conn, &)
+      return yield if conn.transaction_open?
+
+      conn.transaction(isolation: :repeatable_read, &)
     end
   end
 end

@@ -17,7 +17,11 @@ module DagMe
   #   task_dag_node_update        -- BEFORE UPDATE on tasks: scope-change guard (scoped only)
   #   task_dag_node_delete        -- BEFORE DELETE on tasks: drop edges through triggers
   #   task_dag_rebuild_paths()    -- full closure rebuild from edges
-  #   task_dag_validate_paths()   -- closure vs recursive-CTE truth diff
+  #   task_dag_validate_paths()   -- stored closure vs closure recomputed from edges
+  #
+  # rebuild and validate share truth_sql: a layered recomputation that is
+  # polynomial in the graph size. Function bodies are stamped with REVISION;
+  # refresh! upgrades an installed graph in place.
   #
   # Node identity is an ordered column list (Configuration#node_pk_columns):
   # single-key models get the classic parent_id / child_id / ancestor_id /
@@ -35,6 +39,17 @@ module DagMe
   # The paths table and its triggers are skipped for maintain: :recursive_cte;
   # cycle rejection then uses a recursive CTE in the BEFORE INSERT trigger.
   class DDL
+    # Bumped whenever generated function bodies change. Stamped onto the lock
+    # function, so `dag_me:status` can spot installs that predate a fix.
+    REVISION = 2
+
+    # Free space left in every closure page. Writes update path_count and
+    # min_depth, neither indexed, so with room on the page PostgreSQL can
+    # update in place (HOT) and skip both index inserts: on a dense
+    # 1,000-node graph that took HOT updates from 27% to 97% and halved
+    # mid-graph edge writes.
+    PATHS_FILLFACTOR = 70
+
     class << self
       # Installs / removes the SQL objects for every dag the model declares.
       def install!(model)
@@ -43,6 +58,12 @@ module DagMe
 
       def uninstall!(model)
         model.dag_configs.each_value { |config| new(config).uninstall! }
+      end
+
+      # Replaces the function bodies of an installed graph with the current
+      # revision. Tables, triggers, and data are left alone.
+      def refresh!(model)
+        model.dag_configs.each_value { |config| new(config).refresh! }
       end
     end
 
@@ -60,20 +81,45 @@ module DagMe
       execute_all(uninstall_sql)
     end
 
+    # Function bodies plus the closure's storage settings. Tables, triggers,
+    # and rows are left alone; existing pages gain free space as they are
+    # rewritten (VACUUM FULL, or rows updated over time).
+    def refresh!
+      execute_all(function_sql + storage_sql)
+    end
+
+    def storage_sql
+      return [] unless config.closure?
+
+      ["ALTER TABLE #{config.paths_table} SET (fillfactor = #{PATHS_FILLFACTOR});"]
+    end
+
     def install_sql
       statements = [edges_table_sql]
-      if config.closure?
-        statements << paths_table_sql
-        statements.concat(closure_function_sql)
-        statements.concat(closure_trigger_sql)
-        statements << backfill_self_rows_sql
-        statements << rebuild_function_sql
-        statements << validate_function_sql
-      else
-        statements.concat(cte_function_sql)
-        statements.concat(cte_trigger_sql)
-      end
+      statements << paths_table_sql if config.closure?
+      statements.concat(function_sql)
+      statements.concat(config.closure? ? closure_trigger_sql : cte_trigger_sql)
+      statements << backfill_self_rows_sql if config.closure?
       statements
+    end
+
+    # Every function as CREATE OR REPLACE, plus the revision stamp. Re-running
+    # it on an installed graph is how refresh! upgrades in place.
+    def function_sql
+      statements = if config.closure?
+                     closure_function_sql + [rebuild_function_sql, validate_function_sql]
+                   else
+                     cte_function_sql
+                   end
+      statements << revision_comment_sql
+    end
+
+    def revision_comment_sql
+      "COMMENT ON FUNCTION #{config.function_ref('lock')}(text) IS '#{self.class.revision_tag}';"
+    end
+
+    def self.revision_tag
+      "dag_me ddl revision #{REVISION}"
     end
 
     # Graph#backfill_self_rows! reuses this to repair nodes inserted with
@@ -221,7 +267,7 @@ module DagMe
           FOREIGN KEY #{tuple(anc_cols)} REFERENCES #{config.node_table} #{tuple(pk_cols)} ON DELETE CASCADE,
           FOREIGN KEY #{tuple(desc_cols)} REFERENCES #{config.node_table} #{tuple(pk_cols)} ON DELETE CASCADE,
           PRIMARY KEY (#{list(anc_cols)}, #{list(desc_cols)})
-        );
+        ) WITH (fillfactor = #{PATHS_FILLFACTOR});
         CREATE INDEX ON #{config.paths_table} (#{list(desc_cols)}, #{list(anc_cols)});
       SQL
     end
@@ -315,6 +361,47 @@ module DagMe
       SQL
     end
 
+    def x_cols
+      pk_cols.map { |c| "x_#{c}" }
+    end
+
+    def y_cols
+      pk_cols.map { |c| "y_#{c}" }
+    end
+
+    # Every pair (x, y) whose paths run through the edge `row` (NEW or OLD):
+    # x reaches the edge's parent, the edge's child reaches y. `through` is
+    # how many x -> y paths use the edge, `via_depth` the shortest of them.
+    def through_edge_sql(row)
+      x = anc_cols.zip(x_cols).map { |a, c| "a.#{a} AS #{c}" }.join(', ')
+      y = desc_cols.zip(y_cols).map { |d, c| "d.#{d} AS #{c}" }.join(', ')
+      <<~SQL.chomp
+        SELECT #{x}, #{y},
+                 a.path_count * d.path_count AS through,
+                 a.min_depth + 1 + d.min_depth AS via_depth
+          FROM #{config.paths_table} a
+          JOIN #{config.paths_table} d ON #{eq(anc_cols, child_cols, left: 'd', right: row)}
+          WHERE #{eq(desc_cols, parent_cols, left: 'a', right: row)}
+      SQL
+    end
+
+    # "p.ancestor_id = r.x_id AND p.descendant_id = r.y_id"
+    def pair_match(row = 'r', target: 'p')
+      "#{eq(anc_cols, x_cols, left: target, right: row)} AND #{eq(desc_cols, y_cols, left: target, right: row)}"
+    end
+
+    # Shortest distance from w's x to w's y over x's remaining out-edges.
+    def recomputed_depth_sql(row)
+      <<~SQL.chomp
+        SELECT MIN(1 + cp.min_depth) AS new_depth
+              FROM #{config.edge_table} e
+              JOIN #{config.paths_table} cp
+                ON #{eq(anc_cols, child_cols, left: 'cp', right: 'e')}
+               AND #{eq(desc_cols, y_cols, left: 'cp', right: row)}
+              WHERE #{eq(parent_cols, x_cols, left: 'e', right: row)}
+      SQL
+    end
+
     def edge_insert_apply_sql
       paths = config.paths_table
       <<~SQL
@@ -340,75 +427,79 @@ module DagMe
 
     def edge_delete_apply_sql
       p = config.prefix
-      edges = config.edge_table
       paths = config.paths_table
-      x_cols = pk_cols.map { |c| "x_#{c}" }
-      y_cols = pk_cols.map { |c| "y_#{c}" }
-      rect_defs = (col_defs(x_cols) + col_defs(y_cols)).map { |d| "    #{d}," }.join("\n")
+      edges = config.edge_table
+      work_defs = (col_defs(x_cols) + col_defs(y_cols)).map { |d| "    #{d}" }.join(",\n")
       <<~SQL
         CREATE OR REPLACE FUNCTION #{config.function_ref('edge_delete_apply')}() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
           PERFORM #{config.function_ref('lock')}(#{scope_key_expr('OLD')});
 
-          -- The affected rectangle: every pair (x, y) with x reaching OLD's parent
-          -- and OLD's child reaching y lost `removed` paths through this edge.
-          -- Multipliers cannot themselves traverse the deleted edge (that would
-          -- imply a cycle), so pre-decrement closure values are exact here.
-          CREATE TEMP TABLE IF NOT EXISTS #{p}_delete_rect (
-        #{rect_defs}
-            removed numeric NOT NULL,
-            via_depth integer NOT NULL,
-            PRIMARY KEY (#{list(x_cols)}, #{list(y_cols)})
-          ) ON COMMIT DROP;
-          DELETE FROM #{p}_delete_rect;
-
-          INSERT INTO #{p}_delete_rect (#{list(x_cols)}, #{list(y_cols)}, removed, via_depth)
-          SELECT #{list(anc_cols, 'a')}, #{list(desc_cols, 'd')},
-                 a.path_count * d.path_count,
-                 a.min_depth + 1 + d.min_depth
-          FROM #{paths} a
-          JOIN #{paths} d ON #{eq(anc_cols, child_cols, left: 'd', right: 'OLD')}
-          WHERE #{eq(desc_cols, parent_cols, left: 'a', right: 'OLD')};
-
+          -- Every pair through the deleted edge loses `through` paths: pairs
+          -- left with none are dropped, the rest decremented. Multipliers
+          -- cannot traverse the deleted edge (that would imply a cycle), so
+          -- the closure rows they come from are untouched here.
+          WITH r AS MATERIALIZED (
+            #{through_edge_sql('OLD')}
+          ),
+          gone AS (
+            DELETE FROM #{paths} p USING r
+            WHERE #{pair_match} AND p.path_count <= r.through
+          )
           UPDATE #{paths} p
-          SET path_count = p.path_count - r.removed
-          FROM #{p}_delete_rect r
-          WHERE #{eq(anc_cols, x_cols, left: 'p', right: 'r')}
-            AND #{eq(desc_cols, y_cols, left: 'p', right: 'r')};
+          SET path_count = p.path_count - r.through
+          FROM r
+          WHERE #{pair_match} AND p.path_count > r.through;
 
-          DELETE FROM #{paths} p
-          USING #{p}_delete_rect r
-          WHERE #{eq(anc_cols, x_cols, left: 'p', right: 'r')}
-            AND #{eq(desc_cols, y_cols, left: 'p', right: 'r')}
-            AND p.path_count <= 0;
+          -- min_depth repair. Only a surviving pair whose shortest path ran
+          -- through the edge (min_depth = via_depth) can get longer:
+          --   min_depth(x, y) = min(1 + min_depth(c, y)) over edges x -> c
+          -- Pairs that change go to a worklist; their parents' pairs are
+          -- recomputed until nothing changes. Values only grow, from below.
+          CREATE TEMP TABLE IF NOT EXISTS #{p}_depth_work (
+        #{work_defs}
+          ) ON COMMIT DROP;
+          DELETE FROM #{p}_depth_work;
 
-          -- min_depth repair: surviving rectangle pairs may have lost their
-          -- shortest path. Iterate the recurrence
-          --   min_depth(x, y) = min(1 + min_depth(c, y)) over edges x -> c reaching y
-          -- until fixpoint; converges in at most longest-affected-chain steps.
-          LOOP
+          WITH r AS MATERIALIZED (
+            #{through_edge_sql('OLD')}
+          ),
+          raised AS (
             UPDATE #{paths} p
-            SET min_depth = fix.new_md
-            FROM (
-              SELECT #{list(anc_cols, 's')}, #{list(desc_cols, 's')},
-                     (SELECT MIN(1 + cp.min_depth)
-                      FROM #{edges} e
-                      JOIN #{paths} cp
-                        ON #{eq(anc_cols, child_cols, left: 'cp', right: 'e')}
-                       AND #{eq(desc_cols, desc_cols, left: 'cp', right: 's')}
-                      WHERE #{eq(parent_cols, anc_cols, left: 'e', right: 's')}) AS new_md
-              FROM #{paths} s
-              JOIN #{p}_delete_rect r
-                ON #{eq(x_cols, anc_cols, left: 'r', right: 's')}
-               AND #{eq(y_cols, desc_cols, left: 'r', right: 's')}
-              WHERE #{tuple(anc_cols, 's')} <> #{tuple(desc_cols, 's')}
-            ) fix
-            WHERE #{eq(anc_cols, anc_cols, left: 'p', right: 'fix')}
-              AND #{eq(desc_cols, desc_cols, left: 'p', right: 'fix')}
-              AND fix.new_md IS NOT NULL
-              AND fix.new_md <> p.min_depth;
-            EXIT WHEN NOT FOUND;
+            SET min_depth = m.new_depth
+            FROM r
+            CROSS JOIN LATERAL (
+              #{recomputed_depth_sql('r')}
+            ) m
+            WHERE #{pair_match}
+              AND p.min_depth = r.via_depth
+              AND m.new_depth > p.min_depth
+            RETURNING #{list(anc_cols, 'p')}, #{list(desc_cols, 'p')}
+          )
+          INSERT INTO #{p}_depth_work SELECT * FROM raised;
+
+          WHILE EXISTS (SELECT 1 FROM #{p}_depth_work) LOOP
+            WITH done AS (
+              DELETE FROM #{p}_depth_work RETURNING *
+            ),
+            w AS (
+              SELECT DISTINCT #{parent_cols.zip(x_cols).map { |pc, x| "e.#{pc} AS #{x}" }.join(', ')}, #{list(y_cols, 'd')}
+              FROM done d
+              JOIN #{edges} e ON #{eq(child_cols, x_cols, left: 'e', right: 'd')}
+            ),
+            raised AS (
+              UPDATE #{paths} p
+              SET min_depth = m.new_depth
+              FROM w
+              CROSS JOIN LATERAL (
+                #{recomputed_depth_sql('w')}
+              ) m
+              WHERE #{pair_match('w')}
+                AND m.new_depth > p.min_depth
+              RETURNING #{list(anc_cols, 'p')}, #{list(desc_cols, 'p')}
+            )
+            INSERT INTO #{p}_depth_work SELECT * FROM raised;
           END LOOP;
 
           RETURN NULL;
@@ -499,48 +590,139 @@ module DagMe
       SQL
     end
 
-    def truth_walk_sql
+    # Scratch tables for truth_sql: one row per node with its layer, and the
+    # closure being computed. Temp, dropped at commit.
+    def truth_scratch_sql
+      p = config.prefix
+      layer_defs = col_defs(pk_cols).map { |d| "  #{d}," }.join("\n")
+      truth_defs = (col_defs(anc_cols) + col_defs(desc_cols)).map { |d| "  #{d}," }.join("\n")
       <<~SQL.chomp
-        WITH RECURSIVE walk(#{list(anc_cols)}, #{list(desc_cols)}, depth) AS (
-          SELECT #{list(parent_cols)}, #{list(child_cols)}, 1 FROM #{config.edge_table}
-          UNION ALL
-          SELECT #{list(anc_cols, 'w')}, #{list(child_cols, 'e')}, w.depth + 1
-          FROM walk w
-          JOIN #{config.edge_table} e ON #{eq(parent_cols, desc_cols, left: 'e', right: 'w')}
-        )
+        CREATE TEMP TABLE IF NOT EXISTS #{p}_layer (
+        #{layer_defs}
+          layer integer NOT NULL,
+          PRIMARY KEY (#{list(pk_cols)})
+        ) ON COMMIT DROP;
+        CREATE INDEX IF NOT EXISTS #{p}_layer_by_layer ON #{p}_layer (layer);
+        DELETE FROM #{p}_layer;
+        CREATE TEMP TABLE IF NOT EXISTS #{p}_truth (
+        #{truth_defs}
+          min_depth integer NOT NULL,
+          path_count numeric NOT NULL,
+          PRIMARY KEY (#{list(desc_cols)}, #{list(anc_cols)})
+        ) ON COMMIT DROP;
+        DELETE FROM #{p}_truth;
       SQL
     end
 
+    # Computes the exact closure from the edges into <prefix>_truth, without
+    # walking paths one by one (path counts grow exponentially with every
+    # diamond, so an enumerating walk does too).
+    #
+    # Nodes are layered by their longest distance from a root, one set-based
+    # INSERT per layer. Every parent of a layer-L node sits in a lower layer,
+    # so one aggregate per layer extends the parents' finished rows:
+    #
+    #   path_count(a, v) = sum of path_count(a, u) over edges u -> v
+    #   min_depth(a, v)  = 1 + min of min_depth(a, u) over edges u -> v
+    #
+    # Nodes left without a layer sit on or below a cycle, which only edges
+    # written with triggers disabled can produce: raise DGME1.
+    #
+    # Expects `depth integer` declared by the enclosing function.
+    def truth_sql
+      p = config.prefix
+      edges = config.edge_table
+      node = config.node_table
+      <<~SQL.chomp
+        #{truth_scratch_sql}
+
+        INSERT INTO #{p}_layer (#{list(pk_cols)}, layer)
+        SELECT #{list(pk_cols, 'n')}, 0 FROM #{node} n
+        WHERE NOT EXISTS (SELECT 1 FROM #{edges} e WHERE #{eq(child_cols, pk_cols, left: 'e', right: 'n')});
+
+        depth := 0;
+        LOOP
+          depth := depth + 1;
+          -- children of the previous layer whose parents all have a layer
+          INSERT INTO #{p}_layer (#{list(pk_cols)}, layer)
+          SELECT DISTINCT #{list(child_cols, 'e')}, depth
+          FROM #{p}_layer f
+          JOIN #{edges} e ON #{eq(parent_cols, pk_cols, left: 'e', right: 'f')}
+          WHERE f.layer = depth - 1
+            AND NOT EXISTS (
+              SELECT 1 FROM #{edges} w
+              WHERE #{eq(child_cols, child_cols, left: 'w', right: 'e')}
+                AND NOT EXISTS (SELECT 1 FROM #{p}_layer q WHERE #{eq(pk_cols, parent_cols, left: 'q', right: 'w')})
+            );
+          EXIT WHEN NOT FOUND;
+        END LOOP;
+
+        IF (SELECT count(*) FROM #{p}_layer) < (SELECT count(*) FROM #{node}) THEN
+          RAISE EXCEPTION 'dag_me: % contains a cycle (edges written with triggers disabled?)', '#{edges}'
+            USING ERRCODE = '#{SQLSTATE_CYCLE}';
+        END IF;
+
+        INSERT INTO #{p}_truth (#{list(anc_cols)}, #{list(desc_cols)}, min_depth, path_count)
+        SELECT #{list(pk_cols)}, #{list(pk_cols)}, 0, 1 FROM #{node};
+
+        FOR step IN 1 .. depth - 1 LOOP
+          INSERT INTO #{p}_truth (#{list(anc_cols)}, #{list(desc_cols)}, min_depth, path_count)
+          SELECT #{list(anc_cols, 't')}, #{list(child_cols, 'e')}, MIN(t.min_depth) + 1, SUM(t.path_count)
+          FROM #{p}_layer v
+          JOIN #{edges} e ON #{eq(child_cols, pk_cols, left: 'e', right: 'v')}
+          JOIN #{p}_truth t ON #{eq(desc_cols, parent_cols, left: 't', right: 'e')}
+          WHERE v.layer = step
+          GROUP BY #{list(anc_cols, 't')}, #{list(child_cols, 'e')};
+        END LOOP;
+      SQL
+    end
+
+    # ", n.account_id" (leading comma) or "" - scope taken from the ancestor
+    # node, joined as `n` by truth_scope_join.
+    def truth_scope_select
+      config.scope_columns.map { |c| ", n.#{c}" }.join
+    end
+
+    def truth_scope_join
+      return '' unless scoped?
+
+      " JOIN #{config.node_table} n ON #{eq(pk_cols, anc_cols, left: 'n', right: 't')}"
+    end
+
     def rebuild_function_sql
-      scope_join = scoped? ? "JOIN #{config.node_table} n ON #{eq(pk_cols, anc_cols, left: 'n', right: 'walk')}" : ''
-      scope_group = config.scope_columns.map { |c| ", n.#{c}" }.join
       <<~SQL
         CREATE OR REPLACE FUNCTION #{config.function_ref('rebuild_paths')}() RETURNS void
         LANGUAGE plpgsql AS $$
+        DECLARE
+          depth integer;
         BEGIN
           LOCK TABLE #{config.node_table}, #{config.edge_table} IN SHARE ROW EXCLUSIVE MODE;
+
+        #{truth_sql.gsub(/^/, '  ')}
+
           DELETE FROM #{config.paths_table};
-
           INSERT INTO #{config.paths_table} (#{list(anc_cols)}, #{list(desc_cols)}, min_depth, path_count#{scope_column_list})
-          SELECT #{list(pk_cols)}, #{list(pk_cols)}, 0, 1#{scope_column_list} FROM #{config.node_table};
-
-          #{truth_walk_sql}
-          INSERT INTO #{config.paths_table} (#{list(anc_cols)}, #{list(desc_cols)}, min_depth, path_count#{scope_column_list})
-          SELECT #{list(anc_cols, 'walk')}, #{list(desc_cols, 'walk')}, MIN(depth), COUNT(*)::numeric#{scope_group}
-          FROM walk #{scope_join}
-          GROUP BY #{list(anc_cols, 'walk')}, #{list(desc_cols, 'walk')}#{scope_group};
+          SELECT #{list(anc_cols, 't')}, #{list(desc_cols, 't')}, t.min_depth, t.path_count#{truth_scope_select}
+          FROM #{config.prefix}_truth t#{truth_scope_join};
         END;
         $$;
       SQL
     end
 
+    # The truth is computed across several statements. Inside a REPEATABLE
+    # READ (or stricter) transaction they share one snapshot; under READ
+    # COMMITTED each statement would see fresh data, so writers are held off
+    # with SHARE locks for the duration instead.
     def validate_function_sql
-      scope_join = scoped? ? "JOIN #{config.node_table} n ON #{eq(pk_cols, anc_cols, left: 'n', right: 'walk')}" : ''
-      scope_group = config.scope_columns.map { |c| ", n.#{c}" }.join
       scope_mismatch = scoped? ? "OR #{scope_distinct_expr('s', 't')}" : ''
       returns = (col_defs(anc_cols, not_null: false) + col_defs(desc_cols, not_null: false))
                 .map { |d| "  #{d}," }.join("\n")
       coalesced = (anc_cols + desc_cols).map { |c| "COALESCE(t.#{c}, s.#{c})" }.join(",\n                 ")
+      truth = if scoped?
+                "(SELECT t.*#{truth_scope_select} FROM #{config.prefix}_truth t#{truth_scope_join})"
+              else
+                "#{config.prefix}_truth"
+              end
       <<~SQL
         CREATE OR REPLACE FUNCTION #{config.function_ref('validate_paths')}()
         RETURNS TABLE(
@@ -550,18 +732,22 @@ module DagMe
           true_min_depth integer,
           true_path_count numeric
         )
-        LANGUAGE sql AS $$
-          #{truth_walk_sql}, truth AS (
-            SELECT #{list(anc_cols, 'walk')}, #{list(desc_cols, 'walk')}, MIN(depth) AS min_depth, COUNT(*)::numeric AS path_count#{scope_group}
-            FROM walk #{scope_join}
-            GROUP BY #{list(anc_cols, 'walk')}, #{list(desc_cols, 'walk')}#{scope_group}
-            UNION ALL
-            SELECT #{list(pk_cols)}, #{list(pk_cols)}, 0, 1::numeric#{scope_column_list} FROM #{config.node_table}
-          )
+        LANGUAGE plpgsql AS $$
+        #variable_conflict use_column
+        DECLARE
+          depth integer;
+        BEGIN
+          IF current_setting('transaction_isolation') IN ('read committed', 'read uncommitted') THEN
+            LOCK TABLE #{config.node_table}, #{config.edge_table} IN SHARE MODE;
+          END IF;
+
+        #{truth_sql.gsub(/^/, '  ')}
+
+          RETURN QUERY
           SELECT #{coalesced},
                  s.min_depth, s.path_count,
                  t.min_depth, t.path_count
-          FROM truth t
+          FROM #{truth} t
           FULL OUTER JOIN #{config.paths_table} s
             ON #{eq(anc_cols, anc_cols, left: 's', right: 't')}
            AND #{eq(desc_cols, desc_cols, left: 's', right: 't')}
@@ -570,6 +756,7 @@ module DagMe
              OR s.min_depth <> t.min_depth
              OR s.path_count <> t.path_count
              #{scope_mismatch};
+        END;
         $$;
       SQL
     end

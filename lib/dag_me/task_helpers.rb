@@ -46,6 +46,7 @@ module DagMe
       lines.concat(table_checks(model, config))
       lines.concat(trigger_checks(model, config))
       lines.concat(function_checks(model, config))
+      lines << revision_line(model, installed_revision(model, config))
       lines << closure_check(model, config)
       "#{lines.compact.join("\n  ")}\n"
     end
@@ -111,6 +112,31 @@ module DagMe
       'n.nspname = ANY (current_schemas(false))'
     end
 
+    # Function bodies carry the DDL revision they were generated from (a
+    # comment on the lock function). :current, :outdated, or nil when the
+    # lock function is missing (function_checks already reports that).
+    def installed_revision(model, config)
+      conn = model.connection
+      stamps = conn.select_values(<<~SQL)
+        SELECT COALESCE(obj_description(p.oid, 'pg_proc'), '') FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE #{namespace_filter(conn, config)}
+          AND p.proname = #{conn.quote("#{config.prefix}_lock")}
+      SQL
+      return nil if stamps.empty?
+
+      stamps.first == DDL.revision_tag ? :current : :outdated
+    end
+
+    def revision_line(model, revision)
+      case revision
+      when :current then ok("functions at revision #{DDL::REVISION}")
+      when :outdated
+        bad("functions predate revision #{DDL::REVISION} - run `rails generate dag_me:refresh #{model.name}` " \
+            'and migrate')
+      end
+    end
+
     def closure_check(model, config)
       return ok('closure: not materialized (recursive_cte)') unless config.closure?
       return nil unless model.connection.table_exists?(config.paths_table)
@@ -123,6 +149,8 @@ module DagMe
         facade = config.default? ? 'Model.dag' : "Model.dag(:#{config.name})"
         bad("closure diverged: #{discrepancies.length} rows - run #{facade}.rebuild!")
       end
+    rescue CycleError
+      bad("#{config.edge_table} contains a cycle - edges were written with triggers disabled")
     end
   end
 end
