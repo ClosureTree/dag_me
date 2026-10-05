@@ -364,7 +364,7 @@ All assertions accept `dag:` for named networks.
 
 ```bash
 make up      # postgres:18 via docker compose (port 5438)
-make check   # rubocop + full suite
+make check   # dictator lint + full suite
 ```
 
 The suite includes property tests that apply random edge insertions, edge deletions,

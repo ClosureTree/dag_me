@@ -29,7 +29,7 @@ module DagMe
       # Ivar peek keeps class load DB-free; composite keys must be declared
       # before the macro. Array === because AR seeds a BasicObject sentinel.
       @composite_pk = model.instance_variable_defined?(:@primary_key) &&
-                      Array === model.instance_variable_get(:@primary_key) # rubocop:disable Style/CaseEquality
+                      Array === model.instance_variable_get(:@primary_key)
     end
 
     def closure?

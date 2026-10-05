@@ -15,7 +15,7 @@ test:
 	bundle exec rake test
 
 lint:
-	bundle exec rubocop
+	dictator lint lib test
 
 check: lint test
 
