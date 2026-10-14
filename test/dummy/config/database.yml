@@ -1,3 +1,6 @@
 test:
   url: <%= ENV.fetch('DATABASE_URL_PG', 'postgresql://dag_me:dag_me@127.0.0.1:5438/dag_me_test') %>
   pool: 10
+  # libpq's GSSAPI negotiation segfaults in forked processes on macOS, and
+  # padded_cell runs every test in a fork.
+  gssencmode: disable

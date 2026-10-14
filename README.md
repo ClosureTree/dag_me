@@ -374,6 +374,16 @@ make up      # postgres:18 via docker compose (port 5438)
 make check   # dictator lint + full suite
 ```
 
+[padded_cell](https://github.com/seuros/padded_cell) runs the suite: test classes in
+parallel workers, each worker on its own database cloned from `dag_me_test`
+(`dag_me_test_0`, `dag_me_test_1`...), every test in its own forked cell. Runner
+options go through `ARGS`:
+
+```bash
+bundle exec rake test ARGS="test/dag_me/basic_test.rb:12"
+bundle exec rake test ARGS="-j 1 --seed 1234"
+```
+
 The suite includes property tests that apply random edge insertions, edge deletions,
 and node destructions (single- and multi-tenant) and validate the closure against a
 recomputation from the edges after every single operation, plus concurrency tests racing

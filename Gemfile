@@ -12,6 +12,7 @@ gem 'debug'
 gem 'mermaid' # rails_lens erd backend
 gem 'minitest'
 gem 'minitest-reporters'
+gem 'padded_cell', require: false # test runner (rake test)
 gem 'rails_lens', require: false
 gem 'railties', '>= 8.1', '!= 8.1.4'
 gem 'rake'

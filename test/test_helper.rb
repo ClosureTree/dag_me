@@ -18,9 +18,29 @@ module DagMeTestSchema
     ActiveRecord::Base.connection.execute('DROP SCHEMA IF EXISTS orbital CASCADE;')
     ActiveRecord::MigrationContext.new(Rails.application.paths['db/migrate'].expanded).migrate
   end
+
+  # padded_cell runs test classes in parallel workers, and tests wipe the
+  # tables they use: each worker gets its own database (dag_me_test_0,
+  # dag_me_test_1...), cloned from the one reset! built.
+  def use_worker_database!(worker)
+    config = ActiveRecord::Base.connection_db_config.configuration_hash
+    template = config[:database]
+    database = "#{template}_#{worker}"
+    ActiveRecord::Base.establish_connection(config.merge(database: 'postgres'))
+    conn = ActiveRecord::Base.connection
+    conn.execute("DROP DATABASE IF EXISTS #{conn.quote_column_name(database)} WITH (FORCE)")
+    conn.execute("CREATE DATABASE #{conn.quote_column_name(database)} TEMPLATE #{conn.quote_column_name(template)}")
+    ActiveRecord::Base.establish_connection(config.merge(database:))
+  end
 end
 
 DagMeTestSchema.reset!
+
+if defined?(PaddedCell)
+  # CREATE DATABASE ... TEMPLATE refuses a template with open sessions.
+  PaddedCell.before_fork { ActiveRecord::Base.connection_handler.clear_all_connections! }
+  PaddedCell.after_fork { |worker| DagMeTestSchema.use_worker_database!(worker) }
+end
 
 # Compile vial definitions (test/vials) into generated fixtures
 # (test/fixtures, gitignored). Deterministic: same seed, same output.
