@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/ClosureTree/dag_me/compare/v0.5.0...v0.5.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* name generator migrations after the full class path and pin refresh migrations to table options ([8da44c1](https://github.com/ClosureTree/dag_me/commit/8da44c1b2a38622e53e31494d4c95006ccfed2f3))
+
 ## [0.5.0](https://github.com/ClosureTree/dag_me/compare/v0.4.2...v0.5.0) (2026-10-06)
 
 
