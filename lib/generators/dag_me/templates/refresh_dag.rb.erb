@@ -1,9 +1,20 @@
 # frozen_string_literal: true
 
-class RefreshDagMeR<%= revision %>For<%= class_name.pluralize %> < ActiveRecord::Migration<%= migration_version %>
-  # Replaces dag_me's function bodies with revision <%= revision %>.
-  # Tables, triggers, and rows are left alone.
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
+  # Replaces dag_me's function bodies for <%= class_name %> with revision <%= revision %>.
+  # Tables, triggers, and rows are left alone. Each dag is pinned to its node
+  # table and options, so renaming the model cannot break this migration.
   def up
-    DagMe::DDL.refresh!(<%= class_name %>)
+<% refresh_calls.each do |call| -%>
+    <%= call %>
+<% end -%>
+  end
+
+  private
+
+  def refresh(table, primary_key: nil, **options)
+    node = Class.new(ActiveRecord::Base) { self.table_name = table }
+    node.primary_key = primary_key if primary_key
+    DagMe::DDL.new(DagMe::Configuration.new(model: node, **options)).refresh!
   end
 end

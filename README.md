@@ -335,9 +335,16 @@ needs a migration. Function bodies are stamped with `DagMe::DDL::REVISION`, and
 rails generate dag_me:refresh Mission
 ```
 
-The migration calls `DagMe::DDL.refresh!(Mission)`, which replaces every function body
-with `CREATE OR REPLACE` and reapplies the closure table's storage settings. Tables,
-triggers, and rows are left alone.
+The migration replaces every function body with `CREATE OR REPLACE` and reapplies the
+closure table's storage settings. Tables, triggers, and rows are left alone. It does not
+reference `Mission`: each dag is pinned to its node table and options as declared when
+you generate it, so the migration still runs after the model is renamed or removed:
+
+```ruby
+def up
+  refresh "missions", maintain: :postgresql_closure, prefix: "mission_dag"
+end
+```
 
 ## Testing your app's graphs
 

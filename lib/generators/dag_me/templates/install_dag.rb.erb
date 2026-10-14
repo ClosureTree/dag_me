@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-class InstallDagMeFor<%= class_name.pluralize %> < ActiveRecord::Migration<%= migration_version %>
+class <%= migration_class_name %> < ActiveRecord::Migration<%= migration_version %>
   def up
     DagMe::DDL.install!(<%= class_name %>)
   end

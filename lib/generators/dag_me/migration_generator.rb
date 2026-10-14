@@ -13,7 +13,7 @@ module DagMe
       source_root File.expand_path('templates', __dir__)
 
       def create_migration_file
-        migration_template 'install_dag.rb.erb', "db/migrate/install_dag_me_for_#{file_name.pluralize}.rb"
+        migration_template 'install_dag.rb.erb', "db/migrate/install_dag_me_for_#{table_name}.rb"
       end
 
       def self.next_migration_number(dirname)
