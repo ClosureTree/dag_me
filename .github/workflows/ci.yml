@@ -30,7 +30,7 @@ jobs:
         with:
           ruby-version: '4.0'
           bundler-cache: true
-      - uses: seuros/dictator-setup@v1
+      - uses: seuros/setup-dictator@master
         with:
           version: 0.25.1
       - run: dictator lint lib test
